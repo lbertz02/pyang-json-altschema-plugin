@@ -1,4 +1,4 @@
-# pyang-json-schema-plugin
+# pyang-json-altschema-plugin
 
 This is a pyang JSON Schema output plugin. It takes YANG files and tries to produce a JSON Schema that validates JSON content similar to the payload as defined in [RFC7951](https://tools.ietf.org/html/rfc7951).
 
