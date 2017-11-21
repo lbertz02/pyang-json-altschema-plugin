@@ -15,7 +15,11 @@ from pyang import statements
 from pyang import types
 from pyang import error
 
-#logging.basicConfig(filename="test.log", level=logging.DEBUG)
+logging.basicConfig(filename="test.log", level=logging.DEBUG)
+
+#Used to capture refcounts for reporting
+refcounts = {}
+unknown_refs = []
 
 def pyang_plugin_init():
     plugin.register_plugin(JSONAltSchemaPlugin())
@@ -78,15 +82,19 @@ class JSONAltSchemaPlugin(plugin.PyangPlugin):
                 grouping = produce_grouping(stmt)
                 logging.debug("added grouping %s" % str(grouping))
                 result['definitions']['groupings']['definitions'].update(grouping)
+                refcounts['groupings/#/definitions/groupings/definitions/' + grouping.iterkeys().next()] = 0
 
         if root_stmt.i_typedefs is not None and len(root_stmt.i_typedefs) > 0:
             result['definitions']['type-definitions'] = { 'definitions' : {} }
             for stmt in modules[0].i_typedefs.values():
                 type_definition = produce_typedef(stmt)
                 result['definitions']['type-definitions']["definitions"].update(type_definition)
+                refcounts['type-definitions/#/definitions/type-definition/definitions/' + type_definition.iterkeys().next()] = 0
 
         schema = produce_schema(root_stmt)
         result["properties"].update(schema)
+
+        dump_stats()
 
         fd.write(json.dumps(result, indent=2))
 
@@ -149,7 +157,9 @@ def produce_type(type_stmt):
     elif hasattr(type_stmt, "i_typedef") and type_stmt.i_typedef is not None:
         logging.debug("Found typedef type in: %s %s (typedef) %s",
                       type_stmt.keyword, type_stmt.arg, type_stmt.i_typedef)
-        type_str = { "$ref" : ("#/definitions/type-definitions/definitions/%s" % type_stmt.arg.split(':')[-1]) }
+        type_name = type_stmt.arg.split(':')[-1]
+        type_str = { "$ref" : ("#/definitions/type-definitions/definitions/%s" % type_name) }
+        update_stats(type_name, 'type-definitions')
     else:
         logging.debug("Missing mapping of: %s %s",
                       type_stmt.keyword, type_stmt.arg, type_stmt.i_typede)
@@ -357,9 +367,11 @@ def produce_typedef(stmt):
 
 def produce_uses(stmt,prefix="#/definitions/groupings/definitions/"):
     logging.debug("in produce_uses: %s %s", stmt.keyword, stmt.arg)
-    val = "%s/%s/definitions" % (prefix, qualify_name(stmt) )
+    val = ("%s/%s/definitions" % (prefix, qualify_name(stmt) )).replace("//", "/")
     
-    target_name = stmt if ':' not in stmt.arg else stmt.arg.split(':')[1]
+    target_name = stmt.arg if ':' not in stmt.arg else stmt.arg.split(':')[1]
+    update_stats(target_name,'groupings')
+    
     logging.debug("Statement Target Name = %s & Main Module = %s" % (target_name, str(stmt.main_module().arg)) )
     
     # Locate the grouping
@@ -374,6 +386,7 @@ def produce_uses(stmt,prefix="#/definitions/groupings/definitions/"):
         result = {
             "$ref" : val
             }
+        update_stats(val)
     else:
         qpath = prefix + stmt.arg.split(':')[-1] + '/definitions'
         logging.debug("Grouping found for %s" % stmt.arg)
@@ -387,8 +400,11 @@ def produce_uses(stmt,prefix="#/definitions/groupings/definitions/"):
                     logging.debug("Producing Uses child of %s" % str(k))
                     if k != '$ref':
                         result[k.split('/')[-1]] = { "$ref" : ("%s" % str(qpath + '/' + k) )}
+                        val = str(qpath + '/' + k)
                     else:
                         result[k] = v
+                        val = v
+                    update_stats(val,val=v)
             elif child.keyword == 'uses':
                 value = produce_uses(child, qpath)
                 for (k,v) in value.items():
@@ -407,3 +423,32 @@ producers = {
     "choice":       produce_choice,
     "uses":         produce_uses
 }
+
+def update_stats(ref,type=None, val=None):
+    if type is not None:
+        if type == 'type-definitions':
+            name = "type-definitions/#/definitions/type-definition/definitions/" + ref
+        elif type == 'groupings':
+            name = "groupings/#/definitions/groupings/definitions/" + ref
+        else:
+            raise Exception("Unknown Statistic type %s" % type)
+    else:
+        if 'type-definition' in ref:
+            name = 'type-definitions/' + ref
+        elif 'groupings' in ref:
+            name = 'groupings/' + ref
+        else:
+            name = 'unknown/' + ref
+            logging.debug("Unknown ref %s: %s" % (str(ref), str(val)))
+            unknown_refs.append(ref)
+    val = 1 if name not in refcounts else (refcounts[name] + 1)
+    refcounts[name] = val
+    
+def dump_stats():
+    logging.debug("\n\n\n>>>>>>>>>>>>>>>> Reference Statistics <<<<<<<<<<<<<<<<<<<<\n\n")
+    for k,v in sorted(refcounts.iteritems(), key=lambda (k,v): (v,k)):
+            logging.debug("%s: %s" % (str(k), str(v)))
+    logging.debug("\n\nUnknown Items\n\n")
+    for i in unknown_refs:
+        logging.debug("%s\n" % str(i))
+    logging.debug("\n\n")
