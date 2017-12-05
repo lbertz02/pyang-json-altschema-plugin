@@ -414,6 +414,9 @@ def produce_uses(stmt,prefix="#/definitions/groupings/definitions/"):
     logging.debug("In produce_uses, returning %s", result)
     return result
 
+def produce_description(stmt):
+    return { "description" : stmt.arg }
+
 producers = {
     # "module":     produce_module,
     "container":    produce_container,
@@ -421,7 +424,8 @@ producers = {
     "leaf-list":    produce_leaf_list,
     "leaf":         produce_leaf,
     "choice":       produce_choice,
-    "uses":         produce_uses
+    "uses":         produce_uses,
+    "description":  produce_description
 }
 
 def update_stats(ref,type=None, val=None):
