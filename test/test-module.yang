@@ -189,6 +189,15 @@ module test-module {
 				bit secondbit;
 			}
 		}
+		leaf abitleaf2 {
+			type bits {
+				bit firstbit;
+				bit secondbit;
+                                bit bitseven {
+                                  position 7;
+                                }
+			}
+		}
 
 		container usescontainer {
 			description

@@ -39,7 +39,7 @@ class JSONAltSchemaPlugin(plugin.PyangPlugin):
                                  help='JSON Alt Schema path'),
             optparse.make_option('--json-altschema-title',
                                  dest='schema_title',
-                                 help='JSON Alt Schema title'),
+                                 help='JSON Alt Schema title')
             ]
 
         group = optparser.add_option_group("JSON Alt Schema-specific options")
@@ -77,19 +77,21 @@ class JSONAltSchemaPlugin(plugin.PyangPlugin):
                   "properties": {}}
         
         if root_stmt.i_groupings is not None and len(root_stmt.i_groupings) > 0:
-            result['definitions']['groupings'] = { 'definitions' : {} }
+            result['definitions']['groupings'] = {}
             for stmt in root_stmt.i_groupings.values():
-                grouping = produce_grouping(stmt)
-                logging.debug("added grouping %s" % str(grouping))
-                result['definitions']['groupings']['definitions'].update(grouping)
-                refcounts['groupings/#/definitions/groupings/definitions/' + grouping.iterkeys().next()] = 0
+                if should_emit(stmt):
+                    grouping = produce_grouping(stmt)
+                    logging.debug("added grouping %s" % str(grouping))
+                    result['definitions']['groupings'].update(grouping)
+                    refcounts['groupings/#/definitions/groupings/' + grouping.iterkeys().next()] = 0
 
         if root_stmt.i_typedefs is not None and len(root_stmt.i_typedefs) > 0:
-            result['definitions']['type-definitions'] = { 'definitions' : {} }
+            result['definitions']['type-definitions'] = { }
             for stmt in modules[0].i_typedefs.values():
-                type_definition = produce_typedef(stmt)
-                result['definitions']['type-definitions']["definitions"].update(type_definition)
-                refcounts['type-definitions/#/definitions/type-definition/definitions/' + type_definition.iterkeys().next()] = 0
+                if should_emit(stmt):
+                    type_definition = produce_typedef(stmt)
+                    result['definitions']['type-definitions'].update(type_definition)
+                    refcounts['type-definitions/#/definitions/type-definition/' + type_definition.iterkeys().next()] = 0
 
         schema = produce_schema(root_stmt)
         result["properties"].update(schema)
@@ -97,6 +99,20 @@ class JSONAltSchemaPlugin(plugin.PyangPlugin):
         dump_stats()
 
         fd.write(json.dumps(result, indent=2))
+
+def should_emit(stmt):
+    return false if get_substmt("status", stmt) == 'deprecated' else true
+
+def get_substmts(name, stmt):
+    if hasattr(stmt, 'substmts'):
+        return [x for x in stmt.substmts if x.keyword == name]
+    return []
+
+def get_substmt(name, stmt):
+    x = get_substmts(name, stmt)
+    if len(x) > 0:
+        return x[0]
+    return None
 
 def find_stmt_by_path(module, path):
     logging.debug("in find_stmt_by_path with: %s %s path: %s", module.keyword, module.arg, path)
@@ -147,7 +163,7 @@ def produce_type(type_stmt):
 
     if types.is_base_type(type_id):
         if type_id in _numeric_type_trans_tbl:
-            type_str = numeric_type_trans(type_id)
+            type_str = _numeric_type_trans_tbl[type_id]
         elif type_id in _other_type_trans_tbl:
             type_str = other_type_trans(type_id, type_stmt)
         else:
@@ -253,21 +269,15 @@ def produce_choice(stmt):
 
 _numeric_type_trans_tbl = {
     # https://tools.ietf.org/html/draft-ietf-netmod-yang-json-02#section-6
-    "int8": ("number", None),
-    "int16": ("number", None),
-    "int32": ("number", "int32"),
-    "int64": ("integer", "int64"),
-    "uint8": ("number", None),
-    "uint16": ("number", None),
-    "uint32": ("integer", "uint32"),
-    "uint64": ("integer", "uint64")
+    "int8": { "type":"integer", "minimum":-128, "maximum":127 },
+    "int16": { "type":"integer", "minimum":-32768, "maximum":32767 },
+    "int32": { "type":"integer", "minimum":-2147483648, "maximum":2147483647 },
+    "int64": { "type":"integer", "minimum":-9223372036854775808, "maximum":9223372036854775807 },
+    "uint8": { "type":"integer", "minimum":0, "maximum":255 },
+    "uint16": { "type":"integer", "minimum":0, "maximum":65535 },
+    "uint32": { "type":"integer", "minimum":0, "maximum":4294967295 },
+    "uint64": { "type":"integer", "minimum":0, "maximum":18446744073709551615 }
     }
-
-def numeric_type_trans(dtype):
-    trans_type = _numeric_type_trans_tbl[dtype][0]
-    # Should include format string in return value
-    # tformat = _numeric_type_trans_tbl[dtype][1]
-    return {"type": trans_type}
 
 def string_trans(stmt):
     logging.debug("in string_trans with stmt %s %s", stmt.keyword, stmt.arg)
@@ -284,7 +294,20 @@ def enumeration_trans(stmt):
 
 def bits_trans(stmt):
     logging.debug("in bits_trans with stmt %s %s", stmt.keyword, stmt.arg)
+    bitslength = 0
     result = {"type": "string"}
+    for child in stmt.substmts:
+        if child.keyword == "bit":
+            incremented = False
+            y = get_substmt("position", child)
+            if y is not None:
+                if (bitslength < y.arg):
+                    bitslength = int(y.arg)
+                    incremented = True
+            if not incremented:
+                bitslength += 1
+    if bitslength > 0:
+        result["pattern"] = ("[01]{%d}" % bitslength)
     return result
 
 def boolean_trans(stmt):
@@ -327,7 +350,8 @@ _other_type_trans_tbl = {
     "empty":                    empty_trans,
     "union":                    union_trans,
     "instance-identifier":      instance_identifier_trans,
-    "leafref":                  leafref_trans
+    "leafref":                  leafref_trans,
+    "binary":                   binary_trans
 }
 
 def other_type_trans(dtype, stmt):
@@ -414,8 +438,12 @@ def produce_uses(stmt,prefix="#/definitions/groupings/definitions/"):
     logging.debug("In produce_uses, returning %s", result)
     return result
 
-def produce_description(stmt):
-    return { "description" : stmt.arg }
+def produce_copy(stmt):
+    return { stmt.keyword : stmt:arg }
+
+def produce_status(stmt):
+    val = 'true' if stmt.arg == 'current' else 'false'
+    return { "deprecated" : val} 
 
 producers = {
     # "module":     produce_module,
@@ -425,7 +453,8 @@ producers = {
     "leaf":         produce_leaf,
     "choice":       produce_choice,
     "uses":         produce_uses,
-    "description":  produce_description
+    "description":  produce_copy,
+    "status": produce_status
 }
 
 def update_stats(ref,type=None, val=None):
